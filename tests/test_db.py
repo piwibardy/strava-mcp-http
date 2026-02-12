@@ -1,7 +1,9 @@
 """Tests for the user database module."""
 
+import json
 import os
 import tempfile
+import time
 
 import pytest
 import pytest_asyncio
@@ -122,3 +124,136 @@ async def test_ensure_db_raises_before_init():
     db = UserDB("/tmp/nonexistent.db")
     with pytest.raises(RuntimeError, match="Database not initialized"):
         db._ensure_db()
+
+
+# --- OAuth tables ---
+
+
+@pytest.mark.asyncio
+async def test_init_creates_oauth_tables(db):
+    """Test that init creates all OAuth tables."""
+    conn = db._ensure_db()
+    for table in ["oauth_clients", "oauth_pending_sessions", "oauth_authorization_codes", "oauth_tokens"]:
+        cursor = await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
+        row = await cursor.fetchone()
+        assert row is not None, f"Table {table} not found"
+
+
+@pytest.mark.asyncio
+async def test_oauth_client_crud(db):
+    """Test saving and retrieving an OAuth client."""
+    info = {"client_id": "c1", "client_secret": "s1", "redirect_uris": []}
+    await db.save_oauth_client("c1", "s1", json.dumps(info))
+
+    result = await db.get_oauth_client("c1")
+    assert result is not None
+    assert result["client_id"] == "c1"
+
+    assert await db.get_oauth_client("nonexistent") is None
+
+
+@pytest.mark.asyncio
+async def test_pending_session_crud(db):
+    """Test pending session save, get, delete."""
+    await db.save_pending_session(
+        session_id="sess-1",
+        client_id="c1",
+        mcp_state="state-1",
+        code_challenge="challenge",
+        redirect_uri="https://example.com/cb",
+        redirect_uri_provided_explicitly=True,
+        scopes=["claudeai"],
+        resource=None,
+    )
+
+    session = await db.get_pending_session("sess-1")
+    assert session is not None
+    assert session["client_id"] == "c1"
+    assert session["mcp_state"] == "state-1"
+
+    await db.delete_pending_session("sess-1")
+    assert await db.get_pending_session("sess-1") is None
+
+
+@pytest.mark.asyncio
+async def test_authorization_code_crud(db):
+    """Test authorization code save, get, delete."""
+
+    await db.save_authorization_code(
+        code="code-1",
+        client_id="c1",
+        api_key="key-1",
+        code_challenge="challenge",
+        redirect_uri="https://example.com/cb",
+        redirect_uri_provided_explicitly=True,
+        scopes=["claudeai"],
+        resource=None,
+        expires_at=time.time() + 600,
+    )
+
+    code = await db.get_authorization_code("code-1")
+    assert code is not None
+    assert code["client_id"] == "c1"
+    assert code["api_key"] == "key-1"
+
+    await db.delete_authorization_code("code-1")
+    assert await db.get_authorization_code("code-1") is None
+
+
+@pytest.mark.asyncio
+async def test_oauth_token_crud(db):
+    """Test OAuth token save, get, revoke."""
+    await db.save_oauth_token(
+        token="tok-1",
+        token_type="refresh",
+        client_id="c1",
+        api_key="key-1",
+        scopes=["claudeai"],
+        resource=None,
+        expires_at=None,
+    )
+
+    tok = await db.get_oauth_token("tok-1")
+    assert tok is not None
+    assert tok["token_type"] == "refresh"
+
+    await db.revoke_oauth_token("tok-1")
+    assert await db.get_oauth_token("tok-1") is None  # revoked = filtered
+
+
+@pytest.mark.asyncio
+async def test_revoke_tokens_for_client(db):
+    """Test revoking all tokens for a user+client."""
+    await db.save_oauth_token(
+        token="tok-a",
+        token_type="refresh",
+        client_id="c1",
+        api_key="key-1",
+        scopes=None,
+        resource=None,
+        expires_at=None,
+    )
+    await db.save_oauth_token(
+        token="tok-b",
+        token_type="refresh",
+        client_id="c1",
+        api_key="key-1",
+        scopes=None,
+        resource=None,
+        expires_at=None,
+    )
+    await db.save_oauth_token(
+        token="tok-c",
+        token_type="refresh",
+        client_id="c2",
+        api_key="key-1",
+        scopes=None,
+        resource=None,
+        expires_at=None,
+    )
+
+    await db.revoke_oauth_tokens_for_client("key-1", "c1")
+
+    assert await db.get_oauth_token("tok-a") is None
+    assert await db.get_oauth_token("tok-b") is None
+    assert await db.get_oauth_token("tok-c") is not None  # different client

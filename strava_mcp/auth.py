@@ -1,7 +1,11 @@
+import json
 import logging
+import secrets
+import time
 from urllib.parse import urlencode
 
 import httpx
+from mcp.server.auth.provider import construct_redirect_uri
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 from starlette.routing import Route
@@ -14,6 +18,7 @@ logger = logging.getLogger(__name__)
 AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"
 TOKEN_URL = "https://www.strava.com/oauth/token"
 SCOPES = "read_all,activity:read,activity:read_all,profile:read_all"
+AUTH_CODE_TTL = 600  # 10 minutes
 
 
 def get_redirect_uri(settings: StravaSettings) -> str:
@@ -47,9 +52,15 @@ def create_auth_routes(settings: StravaSettings, db: UserDB) -> list[Route]:
         return RedirectResponse(auth_url)
 
     async def auth_callback(request: Request) -> Response:
-        """Handle the OAuth callback from Strava."""
+        """Handle the OAuth callback from Strava.
+
+        Supports two flows:
+        - MCP OAuth: state matches a pending session -> redirect to Claude
+        - Legacy: no pending session -> show HTML page with API key
+        """
         code = request.query_params.get("code")
         error = request.query_params.get("error")
+        state = request.query_params.get("state")
 
         if error:
             logger.error("OAuth error from Strava: %s", error)
@@ -64,7 +75,7 @@ def create_auth_routes(settings: StravaSettings, db: UserDB) -> list[Route]:
                 status_code=400,
             )
 
-        # Exchange code for tokens
+        # Exchange Strava code for tokens
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
@@ -98,6 +109,37 @@ def create_auth_routes(settings: StravaSettings, db: UserDB) -> list[Route]:
                 token_expires_at=expires_at,
             )
 
+            # Check if this is an MCP OAuth flow
+            if state:
+                pending = await db.get_pending_session(state)
+                if pending:
+                    # MCP OAuth: generate auth code, redirect to Claude
+                    await db.delete_pending_session(state)
+
+                    mcp_auth_code = secrets.token_urlsafe(32)
+                    scopes = json.loads(pending["scopes"]) if pending["scopes"] else []
+
+                    await db.save_authorization_code(
+                        code=mcp_auth_code,
+                        client_id=pending["client_id"],
+                        api_key=api_key,
+                        code_challenge=pending["code_challenge"],
+                        redirect_uri=pending["redirect_uri"],
+                        redirect_uri_provided_explicitly=bool(pending["redirect_uri_provided_explicitly"]),
+                        scopes=scopes,
+                        resource=pending["resource"],
+                        expires_at=time.time() + AUTH_CODE_TTL,
+                    )
+
+                    redirect_url = construct_redirect_uri(
+                        pending["redirect_uri"],
+                        code=mcp_auth_code,
+                        state=pending["mcp_state"],
+                    )
+                    logger.info("MCP OAuth: redirecting to client with auth code")
+                    return RedirectResponse(redirect_url, status_code=302)
+
+            # Legacy flow: show HTML page with API key
             athlete_name = data.get("athlete", {}).get("firstname", "Athlete")
 
             return HTMLResponse(f"""

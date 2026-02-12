@@ -1,4 +1,4 @@
-from pydantic import Field, model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -16,9 +16,15 @@ class StravaSettings(BaseSettings):
     server_base_url: str = Field(
         default="http://localhost:8000",
         description="Public base URL of the server (used for OAuth redirect URI)",
+        validation_alias=AliasChoices("SERVER_BASE_URL", "STRAVA_SERVER_BASE_URL"),
     )
 
-    model_config = SettingsConfigDict(env_prefix="STRAVA_", env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_prefix="STRAVA_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        populate_by_name=True,
+    )
 
     @model_validator(mode="after")
     def load_from_env(self):

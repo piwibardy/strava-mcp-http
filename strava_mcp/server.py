@@ -3,12 +3,19 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+from mcp.server.auth.middleware.auth_context import auth_context_var
+from mcp.server.auth.settings import (
+    AuthSettings,
+    ClientRegistrationOptions,
+    RevocationOptions,
+)
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from strava_mcp.config import StravaSettings
 from strava_mcp.db import UserDB
 from strava_mcp.middleware import current_api_key
+from strava_mcp.oauth_provider import StravaOAuthProvider
 from strava_mcp.service import StravaService
 
 # Configure logging
@@ -31,8 +38,24 @@ except Exception as e:
     logger.error(f"Failed to load Strava API settings: {str(e)}")
     raise
 
-# Create DB instance (async init happens in lifespan)
+# Create DB instance (async init happens in main.py before app starts)
 db = UserDB(settings.database_path)
+
+# Create OAuth provider
+oauth_provider = StravaOAuthProvider(settings, db)
+
+# Auth settings for MCP OAuth
+auth_settings = AuthSettings(
+    issuer_url=settings.server_base_url,
+    resource_server_url=f"{settings.server_base_url.rstrip('/')}/mcp",
+    required_scopes=["claudeai"],
+    client_registration_options=ClientRegistrationOptions(
+        enabled=True,
+        valid_scopes=["claudeai"],
+        default_scopes=["claudeai"],
+    ),
+    revocation_options=RevocationOptions(enabled=True),
+)
 
 
 @asynccontextmanager
@@ -55,41 +78,52 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
         logger.info("Database closed")
 
 
-# Create the MCP server
+# Create the MCP server with OAuth support
 # Disable DNS rebinding protection — the server runs behind a reverse proxy/tunnel
 mcp = FastMCP(
     "Strava",
     instructions="MCP server for interacting with the Strava API. "
-    "Users must first authenticate at /auth/strava to get an API key.",
+    "Users must first authenticate via the OAuth flow to access tools.",
     lifespan=lifespan,
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+    auth=auth_settings,
+    auth_server_provider=oauth_provider,
 )
 
 
 async def _get_service(ctx: Context) -> StravaService:
     """Resolve a per-user StravaService from the MCP context.
 
-    Uses the API key from the Authorization header (stored in contextvar
-    by the BearerAuthMiddleware) to look up the user's Strava tokens.
+    Reads the API key from the MCP auth context (set by the library's
+    AuthContextMiddleware) with fallback to legacy BearerAuthMiddleware.
     """
     if not ctx.request_context.lifespan_context:
         raise ValueError("Lifespan context not available")
 
-    settings: StravaSettings = ctx.request_context.lifespan_context["settings"]
-    db: UserDB = ctx.request_context.lifespan_context["db"]
+    ctx_settings: StravaSettings = ctx.request_context.lifespan_context["settings"]
+    ctx_db: UserDB = ctx.request_context.lifespan_context["db"]
 
-    api_key = current_api_key.get()
+    # Try MCP OAuth auth context first (set by MCP library's AuthContextMiddleware)
+    api_key: str | None = None
+    auth_context = auth_context_var.get(None)
+    if auth_context and auth_context.access_token:
+        api_key = auth_context.access_token.token
+
+    # Fallback to legacy BearerAuthMiddleware contextvar
+    if not api_key:
+        api_key = current_api_key.get()
+
     if not api_key:
         raise ValueError(
-            "No API key provided. Please authenticate at /auth/strava "
-            "and include your API key in the Authorization header: Bearer <api-key>"
+            "No API key provided. Please authenticate via the OAuth flow "
+            "or include your API key in the Authorization header: Bearer <api-key>"
         )
 
-    user = await db.get_user_by_api_key(api_key)
+    user = await ctx_db.get_user_by_api_key(api_key)
     if not user:
-        raise ValueError("Invalid API key. Please re-authenticate at /auth/strava")
+        raise ValueError("Invalid API key. Please re-authenticate.")
 
-    return StravaService.for_user(settings, user, db)
+    return StravaService.for_user(ctx_settings, user, ctx_db)
 
 
 @mcp.tool()
@@ -166,4 +200,37 @@ async def get_activity_segments(
         return [segment.model_dump() for segment in segments]
     except Exception as e:
         logger.error(f"Error in get_activity_segments tool: {str(e)}")
+        raise
+
+
+@mcp.tool()
+async def get_rate_limit_status(ctx: Context) -> dict:
+    """Get the current Strava API rate limit status.
+
+    Returns usage and limits from the most recent API call.
+    Use this to check remaining quota before making multiple requests.
+
+    Args:
+        ctx: The MCP request context
+
+    Returns:
+        Rate limit status with short-term (15-min) and daily usage/limits
+    """
+    try:
+        service = await _get_service(ctx)
+        rl = service.get_rate_limits()
+        return {
+            "short_term": {
+                "usage": rl.short_usage,
+                "limit": rl.short_limit,
+                "remaining": rl.short_limit - rl.short_usage,
+            },
+            "daily": {
+                "usage": rl.daily_usage,
+                "limit": rl.daily_limit,
+                "remaining": rl.daily_limit - rl.daily_usage,
+            },
+        }
+    except Exception as e:
+        logger.error(f"Error in get_rate_limit_status tool: {str(e)}")
         raise
