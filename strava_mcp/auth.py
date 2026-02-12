@@ -4,6 +4,7 @@ from urllib.parse import urlencode
 import httpx
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.routing import Route
 
 from strava_mcp.config import StravaSettings
 from strava_mcp.db import UserDB
@@ -21,16 +22,17 @@ def get_redirect_uri(settings: StravaSettings) -> str:
     return f"{base}/auth/callback"
 
 
-def register_auth_routes(mcp_server, settings: StravaSettings, db: UserDB) -> None:  # type: ignore[no-untyped-def]
-    """Register OAuth routes on the FastMCP server.
+def create_auth_routes(settings: StravaSettings, db: UserDB) -> list[Route]:
+    """Create Starlette routes for OAuth authentication.
 
     Args:
-        mcp_server: The FastMCP server instance
         settings: Strava settings
         db: User database
+
+    Returns:
+        List of Starlette Route objects to mount on the app
     """
 
-    @mcp_server.custom_route("/auth/strava", methods=["GET"])
     async def auth_strava(request: Request) -> Response:
         """Redirect the user to Strava's OAuth authorization page."""
         params = {
@@ -44,7 +46,6 @@ def register_auth_routes(mcp_server, settings: StravaSettings, db: UserDB) -> No
         logger.info("Redirecting user to Strava OAuth: %s", auth_url)
         return RedirectResponse(auth_url)
 
-    @mcp_server.custom_route("/auth/callback", methods=["GET"])
     async def auth_callback(request: Request) -> Response:
         """Handle the OAuth callback from Strava."""
         code = request.query_params.get("code")
@@ -66,7 +67,7 @@ def register_auth_routes(mcp_server, settings: StravaSettings, db: UserDB) -> No
         # Exchange code for tokens
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.post(
+                resp = await client.post(
                     TOKEN_URL,
                     data={
                         "client_id": settings.client_id,
@@ -76,14 +77,14 @@ def register_auth_routes(mcp_server, settings: StravaSettings, db: UserDB) -> No
                     },
                 )
 
-                if response.status_code != 200:
-                    logger.error("Token exchange failed: %s", response.text)
+                if resp.status_code != 200:
+                    logger.error("Token exchange failed: %s", resp.text)
                     return HTMLResponse(
                         "<h1>Authorization failed</h1><p>Could not exchange authorization code.</p>",
                         status_code=500,
                     )
 
-                data = response.json()
+                data = resp.json()
                 athlete_id = data["athlete"]["id"]
                 access_token = data["access_token"]
                 refresh_token = data["refresh_token"]
@@ -102,7 +103,8 @@ def register_auth_routes(mcp_server, settings: StravaSettings, db: UserDB) -> No
             return HTMLResponse(f"""
                 <html>
                 <head><title>Strava MCP - Authorized</title></head>
-                <body style="font-family: sans-serif; max-width: 600px; margin: 50px auto; padding: 20px;">
+                <body style="font-family: sans-serif; max-width: 600px;
+                             margin: 50px auto; padding: 20px;">
                     <h1>Authorization successful!</h1>
                     <p>Welcome, <strong>{athlete_name}</strong>!</p>
                     <p>Your API key:</p>
@@ -113,7 +115,8 @@ def register_auth_routes(mcp_server, settings: StravaSettings, db: UserDB) -> No
                                 border-radius: 5px;">Authorization: Bearer {api_key}</pre>
                     <p style="color: #666; font-size: 0.9em;">
                         Save this key — you won't be able to see it again.<br>
-                        If you lose it, re-authorize at <code>/auth/strava</code> to get the same key back.
+                        If you lose it, re-authorize at
+                        <code>/auth/strava</code> to get the same key back.
                     </p>
                 </body>
                 </html>
@@ -125,3 +128,8 @@ def register_auth_routes(mcp_server, settings: StravaSettings, db: UserDB) -> No
                 "<h1>Authorization failed</h1><p>An unexpected error occurred.</p>",
                 status_code=500,
             )
+
+    return [
+        Route("/auth/strava", auth_strava, methods=["GET"]),
+        Route("/auth/callback", auth_callback, methods=["GET"]),
+    ]

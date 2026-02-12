@@ -5,7 +5,6 @@ from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 
-from strava_mcp.auth import register_auth_routes
 from strava_mcp.config import StravaSettings
 from strava_mcp.db import UserDB
 from strava_mcp.middleware import current_api_key
@@ -19,9 +18,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# Initialize settings eagerly (reads env vars, no async needed)
+try:
+    settings = StravaSettings()
+    if not settings.client_id:
+        raise ValueError("STRAVA_CLIENT_ID environment variable is not set")
+    if not settings.client_secret:
+        raise ValueError("STRAVA_CLIENT_SECRET environment variable is not set")
+    logger.info("Loaded Strava API settings")
+except Exception as e:
+    logger.error(f"Failed to load Strava API settings: {str(e)}")
+    raise
+
+# Create DB instance (async init happens in lifespan)
+db = UserDB(settings.database_path)
+
+
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
-    """Set up and tear down multi-tenant resources.
+    """Initialize the database and provide settings/db to tools.
 
     Args:
         server: The FastMCP server instance
@@ -29,27 +44,8 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     Yields:
         The lifespan context containing settings and database
     """
-    try:
-        settings = StravaSettings()
-
-        if not settings.client_id:
-            raise ValueError("STRAVA_CLIENT_ID environment variable is not set")
-        if not settings.client_secret:
-            raise ValueError("STRAVA_CLIENT_SECRET environment variable is not set")
-
-        logger.info("Loaded Strava API settings")
-    except Exception as e:
-        logger.error(f"Failed to load Strava API settings: {str(e)}")
-        raise
-
-    # Initialize user database
-    db = UserDB(settings.database_path)
     await db.init()
     logger.info("User database initialized")
-
-    # Register OAuth routes
-    register_auth_routes(mcp, settings, db)
-    logger.info("OAuth routes registered (/auth/strava, /auth/callback)")
 
     try:
         yield {"settings": settings, "db": db}

@@ -4,8 +4,9 @@ import logging
 import anyio
 import uvicorn
 
+from strava_mcp.auth import create_auth_routes
 from strava_mcp.middleware import BearerAuthMiddleware
-from strava_mcp.server import mcp
+from strava_mcp.server import db, mcp, settings
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +26,14 @@ def main():
         mcp.settings.port = args.port
 
         async def run() -> None:
-            # Get the Starlette app and wrap with auth middleware
+            # Build the MCP Starlette app
             starlette_app = mcp.streamable_http_app()
+
+            # Inject auth routes at the beginning of the app's route table
+            auth_routes = create_auth_routes(settings, db)
+            starlette_app.routes[0:0] = auth_routes
+
+            # Wrap with Bearer auth middleware
             app = BearerAuthMiddleware(starlette_app)
 
             config = uvicorn.Config(
