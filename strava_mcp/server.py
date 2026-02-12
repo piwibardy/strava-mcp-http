@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from strava_mcp.config import StravaSettings
 from strava_mcp.db import UserDB
@@ -55,11 +56,13 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
 
 
 # Create the MCP server
+# Disable DNS rebinding protection — the server runs behind a reverse proxy/tunnel
 mcp = FastMCP(
     "Strava",
     instructions="MCP server for interacting with the Strava API. "
     "Users must first authenticate at /auth/strava to get an API key.",
     lifespan=lifespan,
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
 

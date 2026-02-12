@@ -26,6 +26,11 @@ def main():
         mcp.settings.port = args.port
 
         async def run() -> None:
+            # Initialize the database early so auth routes work
+            # (the MCP lifespan only runs on first MCP session)
+            await db.init()
+            logger.info("User database initialized")
+
             # Build the MCP Starlette app
             starlette_app = mcp.streamable_http_app()
 
