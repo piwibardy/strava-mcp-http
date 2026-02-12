@@ -9,9 +9,14 @@ class StravaSettings(BaseSettings):
     client_secret: str = Field(default="", description="Strava API client secret")
     refresh_token: str | None = Field(
         default=None,
-        description="Strava API refresh token (can be generated through auth flow)",
+        description="Strava API refresh token (fallback for single-user mode)",
     )
     base_url: str = Field(default="https://www.strava.com/api/v3", description="Strava API base URL")
+    database_path: str = Field(default="data/users.db", description="Path to SQLite database for user tokens")
+    server_base_url: str = Field(
+        default="http://localhost:8000",
+        description="Public base URL of the server (used for OAuth redirect URI)",
+    )
 
     model_config = SettingsConfigDict(env_prefix="STRAVA_", env_file=".env", env_file_encoding="utf-8")
 

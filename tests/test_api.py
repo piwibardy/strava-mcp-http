@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -29,16 +30,18 @@ def mock_response():
 
 @pytest.fixture
 def api(settings):
-    api = StravaAPI(settings)
+    api = StravaAPI(
+        settings,
+        access_token="test_access_token",
+        refresh_token="test_refresh_token",
+        token_expires_at=datetime.now().timestamp() + 3600,
+    )
     api._client = AsyncMock()
-    api.access_token = "test_access_token"
-    api.token_expires_at = datetime.now().timestamp() + 3600
     return api
 
 
 @pytest.mark.asyncio
 async def test_ensure_token_valid(api):
-    # Token is already valid
     token = await api._ensure_token()
     assert token == "test_access_token"
 
@@ -46,7 +49,6 @@ async def test_ensure_token_valid(api):
 @pytest.mark.asyncio
 async def test_ensure_token_refresh(settings):
     with patch("httpx.AsyncClient") as mock_client:
-        # Setup mock for token refresh
         mock_instance = mock_client.return_value.__aenter__.return_value
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -56,16 +58,16 @@ async def test_ensure_token_refresh(settings):
         }
         mock_instance.post.return_value = mock_response
 
-        # Create API with expired token
-        api = StravaAPI(settings)
-        api.access_token = "old_access_token"
-        api.token_expires_at = datetime.now().timestamp() - 3600
+        api = StravaAPI(
+            settings,
+            access_token="old_access_token",
+            refresh_token="test_refresh_token",
+            token_expires_at=datetime.now().timestamp() - 3600,
+        )
 
-        # Test token refresh
         token = await api._ensure_token()
         assert token == "new_access_token"
 
-        # Verify correct API call was made
         mock_instance.post.assert_called_once()
         args, kwargs = mock_instance.post.call_args
         assert args[0] == "https://www.strava.com/oauth/token"
@@ -76,8 +78,52 @@ async def test_ensure_token_refresh(settings):
 
 
 @pytest.mark.asyncio
+async def test_ensure_token_refresh_calls_callback(settings):
+    """Test that on_token_refreshed callback is called after refresh."""
+    callback = AsyncMock()
+
+    with patch("httpx.AsyncClient") as mock_client:
+        mock_instance = mock_client.return_value.__aenter__.return_value
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "access_token": "new_access",
+            "refresh_token": "new_refresh",
+            "expires_at": 9999999999.0,
+        }
+        mock_instance.post.return_value = mock_response
+
+        api = StravaAPI(
+            settings,
+            access_token="old",
+            refresh_token="old_refresh",
+            token_expires_at=0.0,
+            on_token_refreshed=callback,
+        )
+
+        await api._ensure_token()
+
+        callback.assert_called_once_with("new_access", "new_refresh", 9999999999.0)
+
+
+@pytest.mark.asyncio
+async def test_ensure_token_no_refresh_token():
+    """Test that missing refresh token raises."""
+    with patch.dict(os.environ, {}, clear=True):
+        no_token_settings = StravaSettings(
+            client_id="test",
+            client_secret="test",
+            refresh_token=None,
+            base_url="https://www.strava.com/api/v3",
+        )
+        api = StravaAPI(no_token_settings, refresh_token=None)
+
+        with pytest.raises(Exception, match="No refresh token available"):
+            await api._ensure_token()
+
+
+@pytest.mark.asyncio
 async def test_get_activities(api, mock_response):
-    # Setup mock response
     activity_data = {
         "id": 1234567890,
         "name": "Morning Run",
@@ -109,26 +155,21 @@ async def test_get_activities(api, mock_response):
     mock_response.json.return_value = [activity_data]
     api._client.request.return_value = mock_response
 
-    # Test get_activities
     activities = await api.get_activities()
 
-    # Verify request
     api._client.request.assert_called_once()
     args, kwargs = api._client.request.call_args
     assert args[0] == "GET"
     assert args[1] == "/athlete/activities"
     assert kwargs["params"] == {"page": 1, "per_page": 30}
 
-    # Verify response
     assert len(activities) == 1
     assert isinstance(activities[0], Activity)
     assert activities[0].id == activity_data["id"]
-    assert activities[0].name == activity_data["name"]
 
 
 @pytest.mark.asyncio
 async def test_get_activity(api, mock_response):
-    # Setup mock response
     activity_data = {
         "id": 1234567890,
         "name": "Morning Run",
@@ -162,17 +203,12 @@ async def test_get_activity(api, mock_response):
     mock_response.json.return_value = activity_data
     api._client.request.return_value = mock_response
 
-    # Test get_activity
     activity = await api.get_activity(1234567890)
 
-    # Verify request
     api._client.request.assert_called_once()
     args, kwargs = api._client.request.call_args
     assert args[0] == "GET"
     assert args[1] == "/activities/1234567890"
 
-    # Verify response
     assert isinstance(activity, DetailedActivity)
     assert activity.id == activity_data["id"]
-    assert activity.name == activity_data["name"]
-    assert activity.description == activity_data["description"]

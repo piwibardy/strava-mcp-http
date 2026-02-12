@@ -1,6 +1,10 @@
 import argparse
 import logging
 
+import anyio
+import uvicorn
+
+from strava_mcp.middleware import BearerAuthMiddleware
 from strava_mcp.server import mcp
 
 logger = logging.getLogger(__name__)
@@ -19,7 +23,22 @@ def main():
     if args.transport == "streamable-http":
         mcp.settings.host = args.host
         mcp.settings.port = args.port
-        mcp.run(transport="streamable-http")
+
+        async def run() -> None:
+            # Get the Starlette app and wrap with auth middleware
+            starlette_app = mcp.streamable_http_app()
+            app = BearerAuthMiddleware(starlette_app)
+
+            config = uvicorn.Config(
+                app,
+                host=args.host,
+                port=args.port,
+                log_level="info",
+            )
+            server = uvicorn.Server(config)
+            await server.serve()
+
+        anyio.run(run)
     else:
         mcp.run(transport="stdio")
 

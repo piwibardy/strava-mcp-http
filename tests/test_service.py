@@ -1,21 +1,10 @@
 from datetime import datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
-from strava_mcp.config import StravaSettings
 from strava_mcp.models import Activity, DetailedActivity, Segment, SegmentEffort
 from strava_mcp.service import StravaService
-
-
-@pytest.fixture
-def settings():
-    return StravaSettings(
-        client_id="test_client_id",
-        client_secret="test_client_secret",
-        refresh_token="test_refresh_token",
-        base_url="https://www.strava.com/api/v3",
-    )
 
 
 @pytest.fixture
@@ -28,15 +17,12 @@ def mock_api():
 
 
 @pytest.fixture
-def service(settings, mock_api):
-    with patch("strava_mcp.service.StravaAPI", return_value=mock_api):
-        service = StravaService(settings)
-        yield service
+def service(mock_api):
+    return StravaService(api=mock_api)
 
 
 @pytest.mark.asyncio
 async def test_get_activities(service, mock_api):
-    # Setup mocked data
     mock_activity = Activity(
         id=1234567890,
         name="Morning Run",
@@ -64,7 +50,6 @@ async def test_get_activities(service, mock_api):
         has_heartrate=True,
         average_heartrate=140,
         max_heartrate=160,
-        # Add required fields with default values
         map=None,
         workout_type=None,
         elev_high=None,
@@ -72,20 +57,15 @@ async def test_get_activities(service, mock_api):
     )
     mock_api.get_activities.return_value = [mock_activity]
 
-    # Test get_activities
     activities = await service.get_activities()
 
-    # Verify API call
     mock_api.get_activities.assert_called_once_with(None, None, 1, 30)
-
-    # Verify response
     assert len(activities) == 1
     assert activities[0] == mock_activity
 
 
 @pytest.mark.asyncio
 async def test_get_activity(service, mock_api):
-    # Setup mocked data
     mock_activity = DetailedActivity(
         id=1234567890,
         name="Morning Run",
@@ -115,7 +95,6 @@ async def test_get_activity(service, mock_api):
         max_heartrate=160,
         athlete={"id": 123},
         description="Test description",
-        # Add required fields with default values
         map=None,
         workout_type=None,
         elev_high=None,
@@ -131,19 +110,14 @@ async def test_get_activity(service, mock_api):
     )
     mock_api.get_activity.return_value = mock_activity
 
-    # Test get_activity
     activity = await service.get_activity(1234567890)
 
-    # Verify API call
     mock_api.get_activity.assert_called_once_with(1234567890, False)
-
-    # Verify response
     assert activity == mock_activity
 
 
 @pytest.mark.asyncio
 async def test_get_activity_segments(service, mock_api):
-    # Setup mocked data
     mock_segment = SegmentEffort(
         id=67890,
         activity_id=1234567890,
@@ -174,7 +148,6 @@ async def test_get_activity_segments(service, mock_api):
             state=None,
             country=None,
         ),
-        # Add required fields with default values
         average_watts=None,
         device_watts=None,
         average_heartrate=None,
@@ -184,12 +157,8 @@ async def test_get_activity_segments(service, mock_api):
     )
     mock_api.get_activity_segments.return_value = [mock_segment]
 
-    # Test get_activity_segments
     segments = await service.get_activity_segments(1234567890)
 
-    # Verify API call
     mock_api.get_activity_segments.assert_called_once_with(1234567890)
-
-    # Verify response
     assert len(segments) == 1
     assert segments[0] == mock_segment

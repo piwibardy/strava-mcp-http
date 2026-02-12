@@ -20,6 +20,9 @@ COPY --from=builder /app /app
 
 ENV PATH="/app/.venv/bin:$PATH"
 
+RUN mkdir -p /app/data
+VOLUME /app/data
+
 EXPOSE 8000
 
 CMD ["strava-mcp", "--transport", "streamable-http", "--host", "0.0.0.0", "--port", "8000"]

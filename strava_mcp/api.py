@@ -1,8 +1,8 @@
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 
 import httpx
-from fastapi import FastAPI
 from httpx import Response
 
 from strava_mcp.config import StravaSettings
@@ -10,21 +10,35 @@ from strava_mcp.models import Activity, DetailedActivity, ErrorResponse, Segment
 
 logger = logging.getLogger(__name__)
 
+# Callback type for when tokens are refreshed
+OnTokenRefreshed = Callable[[str, str, float], Awaitable[None]]
+
 
 class StravaAPI:
     """Client for the Strava API."""
 
-    def __init__(self, settings: StravaSettings, app: FastAPI | None = None):
+    def __init__(
+        self,
+        settings: StravaSettings,
+        access_token: str | None = None,
+        refresh_token: str | None = None,
+        token_expires_at: float | None = None,
+        on_token_refreshed: OnTokenRefreshed | None = None,
+    ):
         """Initialize the Strava API client.
 
         Args:
-            settings: Strava API settings
-            app: FastAPI app (not used, kept for backward compatibility)
+            settings: Strava API settings (client_id, client_secret, base_url)
+            access_token: User's current access token
+            refresh_token: User's refresh token
+            token_expires_at: Expiry timestamp for the access token
+            on_token_refreshed: Async callback when tokens are refreshed
         """
         self.settings = settings
-        self.access_token = None
-        self.token_expires_at = None
-        self.auth_flow_in_progress = False
+        self.access_token = access_token
+        self.refresh_token = refresh_token or settings.refresh_token
+        self.token_expires_at = token_expires_at
+        self._on_token_refreshed = on_token_refreshed
         self._client = httpx.AsyncClient(
             base_url=settings.base_url,
             timeout=30.0,
@@ -33,28 +47,6 @@ class StravaAPI:
     async def close(self):
         """Close the HTTP client."""
         await self._client.aclose()
-
-    async def setup_auth_routes(self):
-        """This method is deprecated and does nothing now.
-        Standalone OAuth server is used instead.
-        """
-        logger.info("Using standalone OAuth server instead of integrated auth routes")
-        return
-
-    async def start_auth_flow(self) -> str:
-        """This method is deprecated.
-        The standalone OAuth server is used instead via _ensure_token().
-
-        Returns:
-            The refresh token
-
-        Raises:
-            Exception: Always raises exception directing to use standalone flow
-        """
-        raise Exception(
-            "Integrated auth flow is no longer supported. "
-            "The standalone OAuth server will be used automatically when needed."
-        )
 
     async def _ensure_token(self) -> str:
         """Ensure we have a valid access token.
@@ -71,36 +63,17 @@ class StravaAPI:
         if self.access_token and self.token_expires_at and now < self.token_expires_at:
             return self.access_token
 
-        # If we don't have a refresh token, try to get one through standalone OAuth flow
-        if not self.settings.refresh_token:
-            logger.warning("No refresh token available, launching standalone OAuth server")
-            try:
-                # Import here to avoid circular import
-                from strava_mcp.oauth_server import get_refresh_token_from_oauth
+        if not self.refresh_token:
+            raise Exception("No refresh token available. Please authenticate via /auth/strava to get your API key.")
 
-                logger.info("Starting OAuth flow to get refresh token")
-                self.settings.refresh_token = await get_refresh_token_from_oauth(
-                    self.settings.client_id, self.settings.client_secret
-                )
-                logger.info("Successfully obtained refresh token from OAuth flow")
-            except Exception as e:
-                error_msg = f"Failed to get refresh token through OAuth flow: {e}"
-                logger.error(error_msg)
-
-                # No fallback to MCP-integrated auth flow anymore
-                raise Exception(
-                    "No refresh token available and OAuth flow failed. "
-                    "Please set STRAVA_REFRESH_TOKEN manually in your environment variables."
-                ) from e
-
-        # Now that we have a refresh token, refresh the access token
+        # Refresh the access token
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "https://www.strava.com/oauth/token",
                 json={
                     "client_id": self.settings.client_id,
                     "client_secret": self.settings.client_secret,
-                    "refresh_token": self.settings.refresh_token,
+                    "refresh_token": self.refresh_token,
                     "grant_type": "refresh_token",
                 },
             )
@@ -116,7 +89,15 @@ class StravaAPI:
 
             # Update the refresh token if it changed
             if "refresh_token" in data:
-                self.settings.refresh_token = data["refresh_token"]
+                self.refresh_token = data["refresh_token"]
+
+            # Notify callback to persist new tokens
+            if self._on_token_refreshed and self.access_token and self.refresh_token:
+                await self._on_token_refreshed(
+                    self.access_token,
+                    self.refresh_token,
+                    self.token_expires_at,
+                )
 
             logger.info("Successfully refreshed access token")
             return self.access_token
