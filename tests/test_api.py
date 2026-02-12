@@ -25,6 +25,10 @@ def mock_response():
     mock.is_success = True
     mock.json = MagicMock(return_value={})
     mock.status_code = 200
+    mock.headers = {
+        "X-RateLimit-Limit": "100,1000",
+        "X-RateLimit-Usage": "10,50",
+    }
     return mock
 
 
@@ -212,3 +216,83 @@ async def test_get_activity(api, mock_response):
 
     assert isinstance(activity, DetailedActivity)
     assert activity.id == activity_data["id"]
+
+
+# --- Rate limit tests ---
+
+
+@pytest.mark.asyncio
+async def test_parse_rate_limits(api, mock_response):
+    """Test that rate limit headers are parsed after a request."""
+    mock_response.headers = {
+        "X-RateLimit-Limit": "100,1000",
+        "X-RateLimit-Usage": "42,350",
+    }
+    mock_response.json.return_value = []
+    api._client.request.return_value = mock_response
+
+    await api.get_activities()
+
+    assert api.rate_limits.short_usage == 42
+    assert api.rate_limits.daily_usage == 350
+    assert api.rate_limits.short_limit == 100
+    assert api.rate_limits.daily_limit == 1000
+
+
+@pytest.mark.asyncio
+async def test_parse_rate_limits_missing_headers(api, mock_response):
+    """Test that missing rate limit headers don't cause errors."""
+    mock_response.headers = {}
+    mock_response.json.return_value = []
+    api._client.request.return_value = mock_response
+
+    await api.get_activities()
+
+    # Should keep defaults
+    assert api.rate_limits.short_usage == 0
+    assert api.rate_limits.daily_usage == 0
+
+
+@pytest.mark.asyncio
+async def test_429_retry_succeeds(api):
+    """Test that a 429 is retried and succeeds on second attempt."""
+    rate_limited = MagicMock()
+    rate_limited.status_code = 429
+    rate_limited.is_success = False
+    rate_limited.headers = {"X-RateLimit-Usage": "100,500", "X-RateLimit-Limit": "100,1000"}
+
+    success = MagicMock()
+    success.status_code = 200
+    success.is_success = True
+    success.json.return_value = []
+    success.headers = {"X-RateLimit-Usage": "1,501", "X-RateLimit-Limit": "100,1000"}
+
+    api._client.request.side_effect = [rate_limited, success]
+
+    with patch("strava_mcp.api.anyio.sleep", new_callable=AsyncMock) as mock_sleep:
+        activities = await api.get_activities()
+
+    mock_sleep.assert_called_once()
+    assert activities == []
+
+
+@pytest.mark.asyncio
+async def test_429_retry_fails(api):
+    """Test that two consecutive 429s raise an exception."""
+    rate_limited = MagicMock()
+    rate_limited.status_code = 429
+    rate_limited.is_success = False
+    rate_limited.headers = {"X-RateLimit-Usage": "100,1000", "X-RateLimit-Limit": "100,1000"}
+
+    api._client.request.side_effect = [rate_limited, rate_limited]
+
+    with patch("strava_mcp.api.anyio.sleep", new_callable=AsyncMock):
+        with pytest.raises(Exception, match="rate limit exceeded"):
+            await api.get_activities()
+
+
+def test_seconds_until_next_window():
+    """Test window boundary calculation returns a positive value."""
+    wait = StravaAPI._seconds_until_next_window()
+    assert wait >= 1.0
+    assert wait <= 15 * 60  # max 15 minutes

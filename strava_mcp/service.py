@@ -1,6 +1,6 @@
 import logging
 
-from strava_mcp.api import StravaAPI
+from strava_mcp.api import RateLimitInfo, StravaAPI
 from strava_mcp.config import StravaSettings
 from strava_mcp.db import User, UserDB
 from strava_mcp.models import Activity, DetailedActivity, SegmentEffort
@@ -72,6 +72,10 @@ class StravaService:
         except Exception as e:
             logger.error(f"Error getting activity {activity_id}: {str(e)}")
             raise
+
+    def get_rate_limits(self) -> RateLimitInfo:
+        """Return the current rate limit state from the last API response."""
+        return self.api.rate_limits
 
     async def get_activity_segments(self, activity_id: int) -> list[SegmentEffort]:
         """Get segments from a specific activity."""

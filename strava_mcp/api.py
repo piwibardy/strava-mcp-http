@@ -1,7 +1,10 @@
 import logging
+import math
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
+import anyio
 import httpx
 from httpx import Response
 
@@ -12,6 +15,16 @@ logger = logging.getLogger(__name__)
 
 # Callback type for when tokens are refreshed
 OnTokenRefreshed = Callable[[str, str, float], Awaitable[None]]
+
+
+@dataclass
+class RateLimitInfo:
+    """Tracks Strava API rate limit state from response headers."""
+
+    short_limit: int = 100
+    daily_limit: int = 1000
+    short_usage: int = 0
+    daily_usage: int = 0
 
 
 class StravaAPI:
@@ -39,6 +52,7 @@ class StravaAPI:
         self.refresh_token = refresh_token or settings.refresh_token
         self.token_expires_at = token_expires_at
         self._on_token_refreshed = on_token_refreshed
+        self.rate_limits = RateLimitInfo()
         self._client = httpx.AsyncClient(
             base_url=settings.base_url,
             timeout=30.0,
@@ -102,6 +116,56 @@ class StravaAPI:
             logger.info("Successfully refreshed access token")
             return self.access_token
 
+    def _parse_rate_limits(self, response: Response) -> None:
+        """Parse rate limit headers from a Strava API response."""
+        try:
+            usage = response.headers.get("X-RateLimit-Usage")
+            limit = response.headers.get("X-RateLimit-Limit")
+            if usage:
+                parts = usage.split(",")
+                self.rate_limits.short_usage = int(parts[0].strip())
+                self.rate_limits.daily_usage = int(parts[1].strip())
+            if limit:
+                parts = limit.split(",")
+                self.rate_limits.short_limit = int(parts[0].strip())
+                self.rate_limits.daily_limit = int(parts[1].strip())
+
+            # Warn when approaching limits
+            if self.rate_limits.short_limit > 0:
+                pct = self.rate_limits.short_usage / self.rate_limits.short_limit
+                if pct >= 0.8:
+                    logger.warning(
+                        "Approaching 15-min rate limit: %d/%d (%.0f%%)",
+                        self.rate_limits.short_usage,
+                        self.rate_limits.short_limit,
+                        pct * 100,
+                    )
+            if self.rate_limits.daily_limit > 0:
+                pct = self.rate_limits.daily_usage / self.rate_limits.daily_limit
+                if pct >= 0.8:
+                    logger.warning(
+                        "Approaching daily rate limit: %d/%d (%.0f%%)",
+                        self.rate_limits.daily_usage,
+                        self.rate_limits.daily_limit,
+                        pct * 100,
+                    )
+        except (ValueError, IndexError):
+            logger.debug("Could not parse rate limit headers")
+
+    @staticmethod
+    def _seconds_until_next_window() -> float:
+        """Calculate seconds until the next 15-minute window boundary."""
+        now = datetime.now(UTC)
+        current_minute = now.minute
+        next_boundary = (math.ceil((current_minute + 1) / 15) * 15) % 60
+        if next_boundary <= current_minute:
+            # Wraps to next hour
+            wait_minutes = 60 - current_minute + next_boundary
+        else:
+            wait_minutes = next_boundary - current_minute
+        wait_seconds = wait_minutes * 60 - now.second
+        return max(1.0, wait_seconds)
+
     async def _request(self, method: str, endpoint: str, **kwargs) -> Response:
         """Make a request to the Strava API.
 
@@ -122,7 +186,27 @@ class StravaAPI:
             headers.update(kwargs.pop("headers"))
 
         url = endpoint if endpoint.startswith("/") else f"/{endpoint}"
-        response = await self._client.request(method, url, headers=headers, **kwargs)
+
+        for attempt in range(2):
+            response = await self._client.request(method, url, headers=headers, **kwargs)
+            self._parse_rate_limits(response)
+
+            if response.status_code != 429:
+                break
+
+            if attempt == 0:
+                wait = self._seconds_until_next_window()
+                logger.warning(
+                    "Rate limited (429). Waiting %.0fs until next 15-min window.",
+                    wait,
+                )
+                await anyio.sleep(wait)
+            else:
+                raise Exception(
+                    f"Strava API rate limit exceeded after retry. "
+                    f"Usage: {self.rate_limits.short_usage}/{self.rate_limits.short_limit} (15min), "
+                    f"{self.rate_limits.daily_usage}/{self.rate_limits.daily_limit} (daily)"
+                )
 
         if not response.is_success:
             error_msg = f"Strava API request failed: {response.status_code} - {response.text}"
