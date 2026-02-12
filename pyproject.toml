@@ -1,6 +1,6 @@
 [project]
-name = "strava-mcp"
-version = "0.5.0"
+name = "strava-mcp-http"
+version = "0.5.1"
 description = "Strava integration for MCP"
 readme = "README.md"
 requires-python = ">=3.13"
