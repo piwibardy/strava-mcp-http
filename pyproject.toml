@@ -32,7 +32,7 @@ dev = [
     "pytest-asyncio>=0.23.5",
     "ruff>=0.5.1",
     "pytest-cov>=6.0.0",
-    "pyright>=1.1.385",
+    "pyright>=1.1.408",
 ]
 
 [build-system]
