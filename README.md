@@ -1,22 +1,29 @@
 # Strava MCP Server
 
-[![CI/CD Pipeline](https://github.com/yorrickjansen/strava-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/yorrickjansen/strava-mcp/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/yorrickjansen/strava-mcp/branch/main/graph/badge.svg)](https://codecov.io/gh/yorrickjansen/strava-mcp)
+[![CI/CD Pipeline](https://github.com/piwibardy/strava-mcp-http/actions/workflows/ci.yml/badge.svg)](https://github.com/piwibardy/strava-mcp-http/actions/workflows/ci.yml)
 
-A Model Context Protocol (MCP) server for interacting with the Strava API.
-
-<a href="https://glama.ai/mcp/servers/@yorrickjansen/strava-mcp">
-  <img width="380" height="200" src="https://glama.ai/mcp/servers/@yorrickjansen/strava-mcp/badge" alt="Strava Server MCP server" />
-</a>
+A Model Context Protocol (MCP) server for interacting with the Strava API. Supports both **stdio** and **streamable-http** transports.
 
 ## User Guide
 
 ### Installation
 
-You can easily install Strava MCP with `uvx`:
+You can install Strava MCP with `uvx`:
 
 ```bash
 uvx strava-mcp
+```
+
+### Docker
+
+Build and run the server with Docker (defaults to streamable-http on port 8000):
+
+```bash
+docker build -t strava-mcp .
+docker run -p 8000:8000 \
+  -e STRAVA_CLIENT_ID=your_client_id \
+  -e STRAVA_CLIENT_SECRET=your_client_secret \
+  strava-mcp
 ```
 
 ### Setting Up Strava Credentials
@@ -34,7 +41,7 @@ uvx strava-mcp
    export STRAVA_CLIENT_SECRET=your_client_secret
    ```
 
-3. **Configure Claude Desktop**:
+3. **Configure Claude Desktop** (stdio transport):
    Add the following to your Claude configuration (`/Users/<username>/Library/Application Support/Claude/claude_desktop_config.json`):
 
    ```json
@@ -45,6 +52,12 @@ uvx strava-mcp
            "source ~/.ssh/strava.sh && uvx strava-mcp"
        ]
    }
+   ```
+
+4. **HTTP transport** (e.g. for remote or Docker deployments):
+
+   ```bash
+   strava-mcp --transport streamable-http --host 0.0.0.0 --port 8000
    ```
 
 ### Authentication
@@ -80,26 +93,19 @@ Retrieves segments from a specific activity.
 **Parameters:**
 - `activity_id`: The ID of the activity
 
-#### Get Segment Leaderboard
-Gets the leaderboard for a specific segment.
-
-**Parameters:**
-- `segment_id`: The ID of the segment
-- Various optional filters (gender, age group, etc.)
-
 ## Developer Guide
 
 ### Project Setup
 
 1. Clone the repository:
    ```bash
-   git clone <repository-url>
-   cd strava
+   git clone git@github.com:piwibardy/strava-mcp-http.git
+   cd strava-mcp-http
    ```
 
 2. Install dependencies:
    ```bash
-   uv install
+   uv sync
    ```
 
 3. Set up environment variables:
@@ -114,6 +120,11 @@ Gets the leaderboard for a specific segment.
 Run the server with MCP CLI:
 ```bash
 mcp dev strava_mcp/main.py
+```
+
+Or with HTTP transport:
+```bash
+uv run strava-mcp --transport streamable-http --port 8000
 ```
 
 ### Manual Authentication
@@ -134,8 +145,9 @@ python get_token.py
   - `oauth_server.py`: Standalone OAuth server implementation
   - `service.py`: Service layer for business logic
   - `server.py`: MCP server implementation
+  - `main.py`: Main entry point (argparse for transport/host/port)
 - `tests/`: Unit tests
-- `strava_mcp/main.py`: Main entry point to run the server
+- `Dockerfile`: Multi-stage Docker build
 - `get_token.py`: Utility script to get a refresh token manually
 
 ### Running Tests
@@ -148,7 +160,6 @@ pytest
 
 #### Building the package
 ```bash
-# Build both sdist and wheel
 uv build
 ```
 
@@ -169,3 +180,4 @@ uv publish
 
 - [Strava API](https://developers.strava.com/)
 - [Model Context Protocol (MCP)](https://modelcontextprotocol.io/)
+- Forked from [yorrickjansen/strava-mcp](https://github.com/yorrickjansen/strava-mcp)
