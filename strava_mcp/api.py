@@ -187,6 +187,7 @@ class StravaAPI:
 
         url = endpoint if endpoint.startswith("/") else f"/{endpoint}"
 
+        response: httpx.Response | None = None
         for attempt in range(2):
             response = await self._client.request(method, url, headers=headers, **kwargs)
             self._parse_rate_limits(response)
@@ -208,6 +209,7 @@ class StravaAPI:
                     f"{self.rate_limits.daily_usage}/{self.rate_limits.daily_limit} (daily)"
                 )
 
+        assert response is not None
         if not response.is_success:
             error_msg = f"Strava API request failed: {response.status_code} - {response.text}"
             logger.error(error_msg)

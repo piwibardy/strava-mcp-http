@@ -49,6 +49,8 @@ class StravaOAuthProvider:
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         """Register a new OAuth client (dynamic client registration)."""
+        if not client_info.client_id:
+            raise ValueError("client_id is required for registration")
         await self.db.save_oauth_client(
             client_id=client_info.client_id,
             client_secret=client_info.client_secret,
@@ -68,6 +70,8 @@ class StravaOAuthProvider:
         """
         session_id = str(uuid.uuid4())
 
+        if not client.client_id:
+            raise ValueError("client_id is required")
         await self.db.save_pending_session(
             session_id=session_id,
             client_id=client.client_id,
@@ -139,6 +143,8 @@ class StravaOAuthProvider:
         await self.db.delete_authorization_code(authorization_code.code)
 
         # Generate a refresh token
+        if not client.client_id:
+            raise ValueError("client_id is required")
         refresh_token = secrets.token_urlsafe(32)
         await self.db.save_oauth_token(
             token=refresh_token,
@@ -152,7 +158,7 @@ class StravaOAuthProvider:
 
         return OAuthToken(
             access_token=api_key,
-            token_type="bearer",
+            token_type="Bearer",
             expires_in=ACCESS_TOKEN_TTL,
             refresh_token=refresh_token,
             scope=" ".join(authorization_code.scopes) if authorization_code.scopes else None,
@@ -209,6 +215,8 @@ class StravaOAuthProvider:
         await self.db.revoke_oauth_token(refresh_token.token)
 
         # Generate a new refresh token
+        if not client.client_id:
+            raise ValueError("client_id is required")
         new_refresh = secrets.token_urlsafe(32)
         await self.db.save_oauth_token(
             token=new_refresh,
@@ -222,7 +230,7 @@ class StravaOAuthProvider:
 
         return OAuthToken(
             access_token=api_key,
-            token_type="bearer",
+            token_type="Bearer",
             expires_in=ACCESS_TOKEN_TTL,
             refresh_token=new_refresh,
             scope=" ".join(scopes) if scopes else None,

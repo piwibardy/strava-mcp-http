@@ -11,6 +11,7 @@ from mcp.server.auth.settings import (
 )
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import AnyHttpUrl
 
 from strava_mcp.config import StravaSettings
 from strava_mcp.db import UserDB
@@ -46,8 +47,8 @@ oauth_provider = StravaOAuthProvider(settings, db)
 
 # Auth settings for MCP OAuth
 auth_settings = AuthSettings(
-    issuer_url=settings.server_base_url,
-    resource_server_url=f"{settings.server_base_url.rstrip('/')}/mcp",
+    issuer_url=AnyHttpUrl(settings.server_base_url),
+    resource_server_url=AnyHttpUrl(f"{settings.server_base_url.rstrip('/')}/mcp"),
     required_scopes=["claudeai"],
     client_registration_options=ClientRegistrationOptions(
         enabled=True,

@@ -76,7 +76,6 @@ async def test_authorize_returns_strava_url(provider, client_info):
         state="mcp-state-123",
         scopes=["claudeai"],
         code_challenge="challenge123",
-        code_challenge_method="S256",
         redirect_uri=AnyUrl("https://example.com/callback"),
         redirect_uri_provided_explicitly=True,
         resource=None,
