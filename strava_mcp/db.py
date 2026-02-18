@@ -29,7 +29,12 @@ class UserDB:
         self._db: aiosqlite.Connection | None = None
 
     async def init(self) -> None:
-        """Initialize the database and create tables if needed."""
+        """Initialize the database and create tables if needed.
+
+        Idempotent: if the database is already initialized, this is a no-op.
+        """
+        if self._db is not None:
+            return
         os.makedirs(os.path.dirname(self.db_path) or ".", exist_ok=True)
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row

@@ -63,20 +63,29 @@ auth_settings = AuthSettings(
 async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     """Initialize the database and provide settings/db to tools.
 
+    For HTTP transport, the DB is pre-initialized by main.py before the app
+    starts, so this lifespan must not close it (it runs per MCP session, and
+    closing would set _db=None, breaking subsequent requests).
+
+    For stdio transport, this lifespan owns the full DB lifecycle.
+
     Args:
         server: The FastMCP server instance
 
     Yields:
         The lifespan context containing settings and database
     """
-    await db.init()
-    logger.info("User database initialized")
+    db_owned_here = db._db is None
+    if db_owned_here:
+        await db.init()
+        logger.info("User database initialized")
 
     try:
         yield {"settings": settings, "db": db}
     finally:
-        await db.close()
-        logger.info("Database closed")
+        if db_owned_here:
+            await db.close()
+            logger.info("Database closed")
 
 
 # Create the MCP server with OAuth support

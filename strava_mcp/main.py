@@ -25,27 +25,33 @@ def main():
         mcp.settings.port = args.port
 
         async def run() -> None:
-            # Initialize the database early so auth routes work
-            # (the MCP lifespan only runs on first MCP session)
+            # Initialize the database before the app starts so that the MCP
+            # OAuth middleware can use it from the very first request.
+            # The lifespan in server.py detects this and skips init/close,
+            # since it runs per MCP session and must not own the DB lifecycle.
             await db.init()
             logger.info("User database initialized")
 
-            # Build the MCP Starlette app (includes OAuth endpoints + auth middleware)
-            starlette_app = mcp.streamable_http_app()
+            try:
+                # Build the MCP Starlette app (includes OAuth endpoints + auth middleware)
+                starlette_app = mcp.streamable_http_app()
 
-            # Inject Strava auth routes at the beginning of the route table
-            # These are public (not auth-protected) and handle the Strava OAuth flow
-            auth_routes = create_auth_routes(settings, db)
-            starlette_app.routes[0:0] = auth_routes
+                # Inject Strava auth routes at the beginning of the route table
+                # These are public (not auth-protected) and handle the Strava OAuth flow
+                auth_routes = create_auth_routes(settings, db)
+                starlette_app.routes[0:0] = auth_routes
 
-            config = uvicorn.Config(
-                starlette_app,
-                host=args.host,
-                port=args.port,
-                log_level="info",
-            )
-            server = uvicorn.Server(config)
-            await server.serve()
+                config = uvicorn.Config(
+                    starlette_app,
+                    host=args.host,
+                    port=args.port,
+                    log_level="info",
+                )
+                server = uvicorn.Server(config)
+                await server.serve()
+            finally:
+                await db.close()
+                logger.info("Database closed")
 
         anyio.run(run)
     else:
